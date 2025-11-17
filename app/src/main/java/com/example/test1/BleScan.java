@@ -70,20 +70,15 @@ public class BleScan {
     }
 
     public void startScanAsync(SharedPreferences sp, ScanResultListener listener) {
-        startScan(sp, listener);
-        if (isScanning) {
-            recvScanData(listener);
-        }
-    }
-    public void startScan(SharedPreferences sp, ScanResultListener listener) {
         if (isScanning) return;
         isScanning = true;
 
-        Log.e(TAG, "Starting BLE scan...");
+        Log.e(TAG, "Starting BLE scan async...");
 
         int ret = At.Lib_EnableMaster(true);
         if (ret != 0) {
-            Log.e(TAG, "Failed to enable master mode" + ret);
+            Log.e(TAG, "Failed to enable master mode: " + ret);
+            isScanning = false;
             return;
         }
 
@@ -96,8 +91,7 @@ public class BleScan {
         );
 
         if (ret == 0) {
-            // 메서드 호출 부분을 반환하여 Kotlin에서 코루틴으로 처리할 수 있게 함
-            new Thread(() -> recvScanData(listener)).start();
+            recvScanData(listener);  // Run in current Coroutine thread
         } else {
             isScanning = false;
             Log.e(TAG, "Failed to start BLE scan");
