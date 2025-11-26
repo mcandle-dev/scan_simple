@@ -52,6 +52,148 @@ public class BleScan {
         }
     }
 
+    /**
+     * AT 명령을 직접 전송하는 방식으로 마스터 모드 설정
+     * At.Lib_AtCtsCtrl() + 수동 AT 명령 사용
+     */
+    public int enableMasterMode1(boolean enable) {
+        if (isMaster == enable) {
+            Log.d(TAG, "Already in the requested mode. No changes made.");
+            return 0;
+        }
+
+        try {
+            // Step 1: CTS 컨트롤 호출 (beacon 모드 종료)
+            Log.d(TAG, "Calling Lib_AtCtsCtrl()...");
+            int ret = At.Lib_AtCtsCtrl();
+            if (ret != 0) {
+                Log.e(TAG, "Lib_AtCtsCtrl() failed with code: " + ret);
+                return ret;
+            }
+            Thread.sleep(100); // CTS 제어 후 대기
+
+            // Step 2: OBSERVER 모드 설정 (0 = Master mode, 1 = Observer mode)
+            String observerCommand = enable ? "AT+OBSERVER=0\r\n" : "AT+OBSERVER=1\r\n";
+            Log.d(TAG, "Sending command: " + observerCommand.trim());
+            ret = sendAtCommand(observerCommand);
+            if (ret != 0) {
+                Log.e(TAG, "Failed to send OBSERVER command");
+                return ret;
+            }
+            Thread.sleep(100); // waiting
+
+            // 응답 확인
+            String response = receiveAtResponse(500);
+            Log.d(TAG, "OBSERVER response: " + response);
+            if (!response.contains("OK")) {
+                Log.e(TAG, "OBSERVER command did not return OK");
+                return -1;
+            }
+
+            // Step 3: AT 모드 종료
+            Log.d(TAG, "Sending command: AT+EXIT");
+            ret = sendAtCommand("AT+EXIT\r\n");
+            if (ret != 0) {
+                Log.e(TAG, "Failed to send EXIT command");
+                return ret;
+            }
+
+            response = receiveAtResponse(500);
+            Log.d(TAG, "EXIT response: " + response);
+
+            // Step 4: AT 모드 재진입
+            Log.d(TAG, "Sending command: +++");
+            ret = sendAtCommand("+++");
+            if (ret != 0) {
+                Log.e(TAG, "Failed to send +++ command");
+                return ret;
+            }
+
+            Thread.sleep(100);
+
+            // 상태 업데이트
+            isMaster = enable;
+            Log.d(TAG, "Master mode updated successfully via manual AT commands");
+            return 0;
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error in enableMasterMode1: " + e.getMessage());
+            return -1;
+        }
+    }
+
+    /**
+     * AT 명령 전송
+     */
+    public int sendAtCommand(String command) {
+        try {
+            Log.d(TAG, "Sending AT command: " + command.replace("\r\n", ""));
+            byte[] cmdBytes = command.getBytes();
+            int ret = At.Lib_ComSend(cmdBytes, cmdBytes.length);
+            if (ret == 0) {
+                Log.d(TAG, "AT command sent successfully");
+                Thread.sleep(200); // 응답 대기
+            } else {
+                Log.e(TAG, "Failed to send AT command: " + ret);
+            }
+            return ret;
+        } catch (Exception e) {
+            Log.e(TAG, "Error sending AT command: " + e.getMessage());
+            return -1;
+        }
+    }
+
+    /**
+     * AT 명령 응답 수신 (재시도 로직 포함)
+     * 최대 5번 재시도, 각 시도 사이 1초 대기
+     */
+    public String receiveAtResponse(int timeoutMs) {
+        final int MAX_RETRY = 5;
+        final int RETRY_DELAY_MS = 1000; // 1초
+
+        for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
+            try {
+                byte[] recvData = new byte[1024];
+                int[] recvDataLen = new int[1];
+
+                int ret = At.Lib_ComRecvAT(recvData, recvDataLen, 10, timeoutMs);
+
+                if (ret == 0 && recvDataLen[0] > 0) {
+                    String response = new String(recvData, 0, recvDataLen[0]);
+                    Log.d(TAG, "Received response (attempt " + attempt + "): " + response.trim());
+                    return response;
+                } else {
+                    Log.d(TAG, "No response received or timeout (attempt " + attempt + "/" + MAX_RETRY + "), ret=" + ret);
+
+                    // 마지막 시도가 아니면 1초 대기 후 재시도
+                    if (attempt < MAX_RETRY) {
+                        Thread.sleep(RETRY_DELAY_MS);
+                    }
+                }
+            } catch (InterruptedException e) {
+                Log.e(TAG, "Retry interrupted: " + e.getMessage());
+                Thread.currentThread().interrupt();
+                return "";
+            } catch (Exception e) {
+                Log.e(TAG, "Error receiving AT response (attempt " + attempt + "): " + e.getMessage());
+
+                // 마지막 시도가 아니면 1초 대기 후 재시도
+                if (attempt < MAX_RETRY) {
+                    try {
+                        Thread.sleep(RETRY_DELAY_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return "";
+                    }
+                }
+            }
+        }
+
+        // 5번 모두 실패
+        Log.e(TAG, "Failed to receive AT response after " + MAX_RETRY + " attempts");
+        return "";
+    }
+
     public String getDeviceMacAddress() {
         String[] macAddress = new String[1];
         int ret = At.Lib_GetAtMac(macAddress);
@@ -84,7 +226,7 @@ public class BleScan {
 
         ret = At.Lib_AtStartNewScan(
                 sp.getString("macAddress", ""),
-                sp.getString("broadcastName", ""),
+                sp.getString("broadcastName", ""),  // ✅ "mcandle"로 시작하는 기기만 스캔
                 -Integer.parseInt(sp.getString("rssi", "0")),
                 sp.getString("manufacturerId", ""),
                 sp.getString("data", "")
@@ -246,14 +388,22 @@ public class BleScan {
                     // ����Ѿ���ʼ����MAC���ݣ���������MAC��ͷ�����ݣ�������
                     continue;
                 }
+            }
 
-                synchronized (deviceMap) {
-                    Map<String, JSONObject> snapshot = new HashMap<>(deviceMap); // 복사본 생성
-                    JSONArray resultArray = new JSONArray(snapshot.values());
-                    if (listener != null) {
-                        listener.onScanResult(resultArray);
+            // Send results after processing all lines (moved outside the for loop)
+            if (!deviceMap.isEmpty() && listener != null) {
+                // Create deep copies of JSONObjects to avoid concurrent modification
+                JSONArray resultArray = new JSONArray();
+                for (JSONObject device : deviceMap.values()) {
+                    try {
+                        // Create a new JSONObject with the same data (deep copy)
+                        JSONObject deviceCopy = new JSONObject(device.toString());
+                        resultArray.put(deviceCopy);
+                    } catch (JSONException e) {
+                        Log.e("TAG", "Error copying JSONObject: " + e);
                     }
                 }
+                listener.onScanResult(resultArray);
             }
         }
     }

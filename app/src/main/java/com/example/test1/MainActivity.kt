@@ -65,7 +65,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun Step1() {
-        val ret = bleScan.enableMasterMode(true)
+        val ret = bleScan.enableMasterMode1(true)
         Log.d("MainActivity", "Step1: " + ret)
         val mac = bleScan.getDeviceMacAddress()
         Log.d("MainActivity", "mac: " + mac)
@@ -73,7 +73,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun Step2() {
-        val ret = bleScan.startNewScan("", "", 0, "", "")
+        val ret = bleScan.startNewScan("", "mcandle", 0, "", "")
         Log.d("MainActivity", "Step2: " + ret)
     }
 
